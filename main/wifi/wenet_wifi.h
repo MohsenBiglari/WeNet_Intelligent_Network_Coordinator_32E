@@ -18,7 +18,6 @@ typedef struct raw_data
     uint32_t data_length;
 } raw_data_t;
 /* Exported constants --------------------------------------------------------*/
-extern bool ap_connected;
 
 /* Exported functions prototypes ---------------------------------------------*/
 void wifi_init(void);

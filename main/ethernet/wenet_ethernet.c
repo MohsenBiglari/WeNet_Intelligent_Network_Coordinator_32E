@@ -5,11 +5,11 @@
 #include "esp_event.h"
 #include "wenet_ethernet.h"
 #include "wenet_wifi.h"
-
+#include "esp_mac.h"
 /* Private macro -------------------------------------------------------------*/
 #define ETH_LOG "ETHERNET"
 #define ETH_RECEIVE_QUEUE_SIZE 50
-#define ETH_WAIT_TO_SEND_RAW_TIMOUT 100 //ms
+#define ETH_WAIT_TO_SEND_RAW_TIMOUT 100 // ms
 #define ETH_PHY_RST_GPIO 33
 #define ETH_MDC_GPIO 23
 #define ETH_MDIO_GPIO 18
@@ -20,6 +20,8 @@
 QueueHandle_t eth_receive_queue = NULL;
 bool eth_connected = false;
 esp_eth_handle_t eth_handle;
+uint8_t eth_esp_addr[6] = {0};
+uint8_t eth_device_addr[6] = {0};
 /* Private function prototypes -----------------------------------------------*/
 static esp_err_t ethernet_input_path(esp_eth_handle_t eth_handle, uint8_t *buffer, uint32_t len, void *priv);
 static void ethernet_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
@@ -42,15 +44,19 @@ void ethernet_init(void)
     oscillator_power.pull_up_en = 0;
     gpio_config(&oscillator_power);
     ESP_ERROR_CHECK(ethernet_init_LAN8720(NULL, NULL));
+    // Log ethernet MAC address
+    esp_read_mac(eth_esp_addr, ESP_MAC_ETH);
+    ESP_LOGI(ETH_LOG, "ESP32 ethernet addr:%02x:%02x:%02x:%02x:%02x:%02x", eth_esp_addr[0], eth_esp_addr[1], eth_esp_addr[2], eth_esp_addr[3], eth_esp_addr[4], eth_esp_addr[5]);
     // Register ethernet events in default event loop
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &ethernet_event_handler, NULL));
     esp_eth_update_input_path(eth_handle, ethernet_input_path, NULL);
-    bool eth_promiscuous = true;
     // Enable prmiscuous mode to pass all traffic
+    bool eth_promiscuous = true;
     ESP_ERROR_CHECK(esp_eth_ioctl(eth_handle, ETH_CMD_S_PROMISCUOUS, &eth_promiscuous));
-    bool flow_ctrl_enable = true;
     // Enable flow control mechanism
+    bool flow_ctrl_enable = true;
     ESP_ERROR_CHECK(esp_eth_ioctl(eth_handle, ETH_CMD_S_FLOW_CTRL, &flow_ctrl_enable));
+    eth_receive_queue = xQueueCreate(ETH_RECEIVE_QUEUE_SIZE, sizeof(raw_data_t *));
     ESP_ERROR_CHECK(esp_eth_start(eth_handle));
 }
 
@@ -74,21 +80,18 @@ void ethernet_uninit(void)
  */
 static esp_err_t ethernet_input_path(esp_eth_handle_t eth_handle, uint8_t *buffer, uint32_t len, void *priv)
 {
-    if (ap_connected)
+    raw_data_t *new_data = malloc(sizeof(raw_data_t));
+    new_data->data = buffer;
+    new_data->data_length = len;
+    if (xQueueSend(eth_receive_queue, &new_data, pdMS_TO_TICKS(ETH_WAIT_TO_SEND_RAW_TIMOUT)) == pdTRUE)
     {
-        raw_data_t *new_data = malloc(sizeof(raw_data_t));
-        new_data->data = buffer;
-        new_data->data_length = len;
-        if (xQueueSend(eth_receive_queue, &new_data, pdMS_TO_TICKS(ETH_WAIT_TO_SEND_RAW_TIMOUT)) == pdTRUE)
-        {
-            return ESP_OK;
-        }
-        else
-        {
-            ESP_LOGE(ETH_LOG, "ethernet queue is full!!");
-            free(buffer);
-            return ESP_FAIL;
-        }
+        return ESP_OK;
+    }
+    else
+    {
+        ESP_LOGE(ETH_LOG, "ethernet queue is full!!");
+        free(buffer);
+        return ESP_FAIL;
     }
     return ESP_OK;
 }
@@ -103,24 +106,18 @@ static esp_err_t ethernet_input_path(esp_eth_handle_t eth_handle, uint8_t *buffe
  */
 static void ethernet_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
-    uint8_t mac_addr[6] = {0};
-
     switch (event_id)
     {
     case ETHERNET_EVENT_CONNECTED:
-        esp_eth_ioctl(eth_handle, ETH_CMD_G_MAC_ADDR, mac_addr);
         ESP_LOGI(ETH_LOG, "Link Up");
-        ESP_LOGI(ETH_LOG, "HW Addr %02x:%02x:%02x:%02x:%02x:%02x", mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
-        eth_receive_queue = xQueueCreate(ETH_RECEIVE_QUEUE_SIZE, sizeof(raw_data_t *));
+
+        xQueueReset(eth_receive_queue);
         eth_connected = true;
         break;
     case ETHERNET_EVENT_DISCONNECTED:
         eth_connected = false;
         ESP_LOGI(ETH_LOG, "Link Down");
-        if (eth_receive_queue != NULL)
-        {
-            vQueueDelete(eth_receive_queue);
-        }
+        xQueueReset(eth_receive_queue);
         break;
     case ETHERNET_EVENT_START:
         ESP_LOGI(ETH_LOG, "Started");

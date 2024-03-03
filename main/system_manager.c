@@ -39,10 +39,15 @@ void system_manager_init(void)
 
     // Initialize the wifi module
     wifi_init();
-    wifi_change_ssid_pass("WeNet", "diplomatic");
+    wifi_change_ssid_pass("WeNet", "diplomatic10");
     wifi_set_raw_mode(true);
+
+    // // Change the wifi mode to access point
+    // wifi_change_mode(WIFI_MODE_AP);
+
+    
     // Change the wifi mode to access point
-    wifi_change_mode(WIFI_MODE_AP);
+    wifi_change_mode(WIFI_MODE_STA);
 }
 
 /************************ (C) COPYRIGHT WeNet *****END OF FILE****************/
